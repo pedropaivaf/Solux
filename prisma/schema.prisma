@@ -1,0 +1,19 @@
+// prisma/schema.prisma
+
+datasource db {
+  provider = "sqlite" // ou "postgresql" se for usar Postgres
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Registro {
+  id           Int      @id @default(autoincrement())
+  entrada      String
+  resposta     String
+  complemento  String?
+  restricoes   String?
+  data         DateTime @default(now())
+}
