@@ -1,7 +1,7 @@
 import express from 'express';
 import { z } from 'zod';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { gerarPDF } from '../utils/gerarPDF.js';
+// import { gerarPDF } from '../utils/gerarPDF.js'; // <-- CORRETO: importação comentada
 import { PrismaClient } from '@prisma/client';
 
 const router = express.Router();
@@ -30,6 +30,7 @@ async function gerarResposta(prompt: string) {
     }
 }
 
+// ... (as outras rotas '/destrinchar' e '/resposta-complementar' continuam iguais) ...
 router.post('/destrinchar', async (req, res) => {
     const { input } = req.body;
     if (!input) {
@@ -76,6 +77,7 @@ const definirLimitesSchema = z.object({
     restricoes: z.string().optional(),
 });
 
+
 router.post('/definir-limites', async (req, res) => {
     const validationResult = definirLimitesSchema.safeParse(req.body);
     if (!validationResult.success) {
@@ -97,10 +99,15 @@ Gere uma lista de soluções racionais e realistas, considerando o contexto. Sej
                 restricoes,
             },
         });
-        const pdfBuffer = await gerarPDF(planoFinal);
-        res.setHeader('Content-Type', 'application/pdf');
-        res.setHeader('Content-Disposition', 'attachment; filename="plano-final.pdf"');
-        res.send(pdfBuffer);
+
+        // const pdfBuffer = await gerarPDF(planoFinal); // <-- CORRETO: chamada da função comentada
+        // res.setHeader('Content-Type', 'application/pdf');
+        // res.setHeader('Content-Disposition', 'attachment; filename="plano-final.pdf"');
+        // res.send(pdfBuffer); // <-- CORRETO: envio do PDF comentado
+
+        // ADICIONADO: Resposta temporária para o teste
+        res.json({ message: "Plano gerado, PDF desativado para teste." });
+
     }
     catch (err) {
         console.error('[ERRO] /definir-limites:', err);
