@@ -1,27 +1,55 @@
 import React from 'react';
-import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
-import SoluxPage from './SoluxPage';
+import { BrowserRouter as Router, Routes, Route, NavLink, Navigate } from 'react-router-dom';
+import Destrinchar from './components/Destrinchar';
 import RegistrosSalvos from './components/RegistrosSalvos';
+import SoluxPage from './SoluxPage'; // se não precisar, remova essa import/rota
+import ThemeToggle from './components/ThemeToggle';
 
 function App() {
   return (
     <Router>
-      <div className="bg-blue-800 text-white px-6 py-4 flex justify-between items-center">
-        <h1 className="font-bold text-xl">SOLUX</h1>
-        <nav className="flex gap-4">
-          <Link to="/" className="hover:underline">Início</Link>
-          <Link to="/registros" className="hover:underline">Registros</Link>
-        </nav>
-      </div>
+      {/* Header */}
+      <header className="sticky top-0 z-50 backdrop-blur bg-brand-700/90 dark:bg-slate-900/80 border-b border-black/10 dark:border-white/10">
+        <div className="mx-auto max-w-6xl px-4 h-14 flex items-center justify-between text-white">
+          <div className="font-bold tracking-wide">SOLUX</div>
+          <nav className="flex items-center gap-6">
+            <NavLink
+              to="/destrinchar"
+              className={({isActive}) => `text-sm ${isActive ? 'underline' : 'opacity-90 hover:opacity-100'}`}
+            >
+              Destrinchar
+            </NavLink>
+            <NavLink
+              to="/registros"
+              className={({isActive}) => `text-sm ${isActive ? 'underline' : 'opacity-90 hover:opacity-100'}`}
+            >
+              Registros
+            </NavLink>
+            <ThemeToggle />
+          </nav>
+        </div>
+      </header>
 
-      <main className="p-6 min-h-screen bg-gray-100 text-gray-900">
-        <Routes>
-          <Route path="/" element={<SoluxPage />} />
-          <Route path="/registros" element={<RegistrosSalvos />} />
-        </Routes>
+      {/* Conteúdo */}
+      <main className="min-h-[calc(100vh-3.5rem)] bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100">
+        <div className="mx-auto max-w-5xl px-4 py-8">
+          <Routes>
+            <Route path="/" element={<Navigate to="/destrinchar" replace />} />
+            <Route path="/destrinchar" element={<Destrinchar />} />
+            <Route path="/registros" element={<RegistrosSalvos />} />
+            <Route path="/old" element={<SoluxPage />} />
+            <Route path="*" element={<Navigate to="/destrinchar" replace />} />
+          </Routes>
+        </div>
       </main>
+
+      {/* Footer minimal */}
+      <footer className="border-t border-black/10 dark:border-white/10">
+        <div className="mx-auto max-w-6xl px-4 py-4 text-xs text-slate-500 dark:text-slate-400">
+          Solux • modo {document.documentElement.classList.contains('dark') ? 'escuro' : 'claro'}
+        </div>
+      </footer>
     </Router>
   );
 }
-
 export default App;

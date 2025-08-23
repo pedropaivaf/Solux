@@ -1,131 +1,220 @@
 import express from 'express';
 import { z } from 'zod';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-// import { gerarPDF } from '../utils/gerarPDF.js'; // <-- CORRETO: importação comentada
 import { PrismaClient } from '@prisma/client';
 
 const router = express.Router();
 
-// A verificação correta para a chave do Google
-if (!process.env.GOOGLE_API_KEY) {
-    throw new Error('❌ GOOGLE_API_KEY não encontrada. Verifique seu .env');
+// ====== STUB / Modo debug sem IA ======
+const STUB = process.env.SOLUX_STUB === '1';
+
+// ====== Prisma (reuso em dev) ======
+const prisma = (global as any).prisma || new PrismaClient();
+if (process.env.NODE_ENV !== 'production') (global as any).prisma = prisma;
+
+// ====== Gemini (só inicializa se não for STUB) ======
+let genAI: GoogleGenerativeAI | null = null;
+if (!STUB) {
+    if (!process.env.GOOGLE_API_KEY || !String(process.env.GOOGLE_API_KEY).trim()) {
+        throw new Error('❌ GOOGLE_API_KEY não encontrada. Defina no .env ou ative SOLUX_STUB=1 para testar sem IA.');
+    }
+    genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY as string);
 }
 
-const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
-
-const prisma = global.prisma || new PrismaClient();
-if (process.env.NODE_ENV !== 'production')
-    global.prisma = prisma;
-
-async function gerarResposta(prompt: string) {
+// ====== Carregamento lazy do gerador de PDF (sem top-level await) ======
+type GerarPDFFn = (conteudo: string, titulo?: string, entradaOriginal?: string) => Promise<Buffer>;
+let _gerarPDF: GerarPDFFn | undefined;
+async function getGerarPDF(): Promise<GerarPDFFn | undefined> {
+    if (_gerarPDF) return _gerarPDF;
     try {
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro-latest" });
+        const mod = await import('../utils/gerarPDF.js' as any);
+        _gerarPDF = mod?.gerarPDF as GerarPDFFn;
+        return _gerarPDF;
+    } catch {
+        return undefined;
+    }
+}
+
+// ====== Função de geração de resposta ======
+async function gerarResposta(prompt: string): Promise<string> {
+    if (STUB) {
+        console.log('[STUB] gerarResposta() — prompt len:', prompt.length);
+        return [
+            'STUB: resposta simulada para debug.',
+            '1) Categorias: ...',
+            '2) Ignorar: ...',
+            '3) Resolver agora: ...',
+            '4) Precisa esperar: ...',
+            '5) Melhor analisar: ...',
+            '6) Mapa de riscos: ...',
+            'Pergunta complementar: Qual é a principal restrição de orçamento/tempo?'
+        ].join('\n');
+    }
+    try {
+        const model = genAI!.getGenerativeModel({ model: 'gemini-1.5-pro-latest' });
         const result = await model.generateContent(prompt);
-        const response = await result.response;
-        const text = response.text();
+        const text = result?.response?.text?.() ?? '';
+        if (!text.trim()) throw new Error('Resposta vazia do provedor');
         return text;
-    } catch (error) {
-        console.error("Erro ao chamar a API do Gemini:", error);
-        throw new Error("Falha na comunicação com a IA do Google.");
+    } catch (e: any) {
+        console.error('[IA ERROR]', e?.message || e);
+        throw e;
     }
 }
 
-// ... (as outras rotas '/destrinchar' e '/resposta-complementar' continuam iguais) ...
-router.post('/destrinchar', async (req, res) => {
-    const { input } = req.body;
-    if (!input) {
-        return res.status(400).json({ error: 'Campo "input" é obrigatório.' });
-    }
-    const prompt = `Analise este problema: "${input}". Categorize-o em:
-1. Categorias
-2. O que pode ser ignorado
-3. O que pode ser resolvido agora
-4. O que precisa esperar
-5. O que precisa ser melhor analisado
-6. Mapa de riscos
-Finalize com uma pergunta complementar para entender melhor o contexto.`;
-    try {
-        const resposta = await gerarResposta(prompt);
-        res.json({ resposta });
-    }
-    catch (err) {
-        console.error('[ERRO] /destrinchar:', err);
-        res.status(500).json({ error: 'Erro na IA ao destrinchar.' });
-    }
-});
-
-router.post('/resposta-complementar', async (req, res) => {
-    try {
-        const { input, respostaComplementar } = req.body;
-        if (!input || !respostaComplementar) {
-            return res.status(400).json({ error: 'Campos "input" e "respostaComplementar" são obrigatórios.' });
-        }
-        const prompt = `Problema original: "${input}". O usuário respondeu: "${respostaComplementar}".
-Com base nisso, pergunte se ele deseja desconsiderar algo, como empréstimos ou venda de ativos.`;
-        const novaPergunta = await gerarResposta(prompt);
-        res.json({ novaPergunta });
-    }
-    catch (err) {
-        console.error('[ERRO] /resposta-complementar:', err);
-        res.status(500).json({ error: 'Erro ao gerar pergunta sobre restrições.' });
-    }
-});
-
+// ====== Schemas ======
 const definirLimitesSchema = z.object({
     input: z.string().min(1, { message: 'Campo "input" é obrigatório.' }),
     respostaComplementar: z.string().min(1, { message: 'Campo "respostaComplementar" é obrigatório.' }),
     restricoes: z.string().optional(),
 });
 
+// ====== Rotas ======
 
-router.post('/definir-limites', async (req, res) => {
-    const validationResult = definirLimitesSchema.safeParse(req.body);
-    if (!validationResult.success) {
-        return res.status(400).json({ errors: validationResult.error.flatten().fieldErrors });
+// Healthcheck / Smoke
+router.get('/ping', (_req, res) => res.json({ ok: true, ts: Date.now(), stub: STUB }));
+
+// POST /api/destrinchar
+router.post('/destrinchar', async (req, res) => {
+    const { input } = req.body as { input?: string };
+    if (!input) return res.status(400).json({ error: 'Campo "input" é obrigatório.' });
+
+    const prompt = `Analise o problema a seguir e entregue no formato solicitado.
+Problema: """${input}"""
+
+ENTREGUE:
+1. Categorias (lista)
+2. O que pode ser ignorado (lista) — respeite se o usuário proibir empréstimos
+3. O que pode ser resolvido agora (lista de ações com passos)
+4. O que precisa esperar (lista com estimativa de tempo)
+5. O que precisa ser melhor analisado (lista)
+6. Mapa de riscos (itens com probabilidade: baixa|media|alta e mitigação)
+Pergunta complementar final (1 pergunta objetiva que ajude a destravar o próximo passo).`;
+
+    try {
+        const resposta = await gerarResposta(prompt);
+        res.json({ resposta });
+    } catch (err: any) {
+        console.error('[ERRO] /destrinchar:', err?.message || err);
+        res.status(500).json({ error: 'Erro na IA ao destrinchar.' });
     }
-    const { input, respostaComplementar, restricoes } = validationResult.data;
-    const prompt = `Com base nesse problema: "${input}", e na resposta complementar: "${respostaComplementar}", considerando as restrições: "${restricoes}".
-Gere uma lista de soluções racionais e realistas, considerando o contexto. Seja direto, prático, e evite repetir informações. Finalize com um plano de ação.`;
+});
+
+// POST /api/resposta-complementar
+router.post('/resposta-complementar', async (req, res) => {
+    try {
+        const { input, respostaComplementar } = req.body as { input?: string; respostaComplementar?: string };
+        if (!input || !respostaComplementar) {
+            return res.status(400).json({ error: 'Campos "input" e "respostaComplementar" são obrigatórios.' });
+        }
+        const prompt = `Problema original: """${input}"""
+Resposta do usuário à pergunta complementar: """${respostaComplementar}"""
+
+Agora gere UMA nova pergunta objetiva para confirmar se o usuário deseja desconsiderar algo, como empréstimos ou venda de ativos, e/ou para coletar a principal restrição que afeta a execução imediata.`;
+        const novaPergunta = await gerarResposta(prompt);
+        res.json({ novaPergunta });
+    } catch (err: any) {
+        console.error('[ERRO] /resposta-complementar:', err?.message || err);
+        res.status(500).json({ error: 'Erro ao gerar pergunta complementar.' });
+    }
+});
+
+// POST /api/definir-limites (gera plano final + PDF opcional)
+router.post('/definir-limites', async (req, res) => {
+    const parsed = definirLimitesSchema.safeParse(req.body);
+    if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.issues.map(i => i.message).join(', ') });
+    }
+    const { input, respostaComplementar, restricoes } = parsed.data;
+
+    const prompt = `Com base no problema: """${input}"""
+Resposta complementar do usuário: """${respostaComplementar}"""
+Restrições declaradas: """${restricoes || 'nenhuma informada'}"""
+
+Monte um PLANO FINAL objetivo contendo:
+- Ações imediatas (passo a passo, 3-7 itens)
+- Ações que exigem tempo (com estimativa em dias/semanas)
+- Riscos (probabilidade baixa|media|alta) e suas mitigações
+- Lista priorizada de tarefas (ordem numérica e critério: impacto|esforco|risco|custo|tempo)
+- Métricas de sucesso (lista)
+Finalize com um RESUMO EXECUTIVO curto.`;
+
     try {
         const planoFinal = await gerarResposta(prompt);
-        if (!planoFinal) {
-            throw new Error('Resposta da IA vazia');
+        if (!planoFinal) throw new Error('Resposta da IA vazia');
+
+        // Persistência
+        try {
+            await prisma.registro.create({
+                data: { entrada: input, resposta: planoFinal, complemento: respostaComplementar, restricoes },
+            });
+        } catch (dbErr: any) {
+            console.warn('[DB WARN] Falha ao salvar registro:', dbErr?.message || dbErr);
         }
-        await prisma.registro.create({
-            data: {
-                entrada: input,
-                resposta: planoFinal,
-                complemento: respostaComplementar,
-                restricoes,
-            },
-        });
 
-        // const pdfBuffer = await gerarPDF(planoFinal); // <-- CORRETO: chamada da função comentada
-        // res.setHeader('Content-Type', 'application/pdf');
-        // res.setHeader('Content-Disposition', 'attachment; filename="plano-final.pdf"');
-        // res.send(pdfBuffer); // <-- CORRETO: envio do PDF comentado
+        // PDF opcional
+        const gerarPDF = await getGerarPDF();
+        if (gerarPDF) {
+            const pdfBuffer = await gerarPDF(planoFinal, 'Solux - Plano Final', input);
 
-        // ADICIONADO: Resposta temporária para o teste
-        res.json({ message: "Plano gerado, PDF desativado para teste." });
+            const filename = 'Solux-PlanoFinal.pdf';
+            res.setHeader('Content-Type', 'application/pdf');
+            // nome compatível com UTF-8
+            res.setHeader(
+                'Content-Disposition',
+                `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`
+            );
+            // expõe o header pro browser se precisar ler (CORS/proxy)
+            res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
 
-    }
-    catch (err) {
-        console.error('[ERRO] /definir-limites:', err);
+            return res.send(pdfBuffer);
+        } else {
+            return res.json({ ok: true, planoFinal });
+        }
+    } catch (err: any) {
+        console.error('[ERRO] /definir-limites:', err?.message || err);
         res.status(500).json({ error: 'Erro ao gerar plano final.' });
     }
 });
 
+// GET /api/registros
 router.get('/registros', async (_req, res) => {
     try {
-        const registros = await prisma.registro.findMany({
-            orderBy: { data: 'desc' },
-        });
+        const registros = await prisma.registro.findMany({ orderBy: { data: 'desc' } });
         res.json(registros);
-    }
-    catch (err) {
-        console.error('[ERRO] /registros:', err);
+    } catch (err: any) {
+        console.error('[ERRO] /registros:', err?.message || err);
         res.status(500).json({ error: 'Erro ao buscar registros do banco.' });
     }
 });
+
+// DELETE /api/registros  -> apaga tudo
+router.delete('/registros', async (_req, res) => {
+    try {
+        const out = await prisma.registro.deleteMany({});
+        res.json({ ok: true, deleted: out.count });
+    } catch (err: any) {
+        console.error('[ERRO] DELETE /registros:', err);
+        res.status(500).json({ ok: false, error: err.message || 'Erro ao limpar registros.' });
+    }
+});
+
+// ✅ DELETE /api/registros/:id -> apaga um (SEM regex no path; valida internamente)
+router.delete('/registros/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ ok: false, error: 'ID inválido' });
+    }
+    await prisma.registro.delete({ where: { id } });
+    res.json({ ok: true });
+  } catch (err: any) {
+    if (err?.code === 'P2025') {
+      return res.status(404).json({ ok: false, error: 'Registro não encontrado' });
+    }
+    res.status(500).json({ ok: false, error: err?.message || 'Erro ao excluir registro.' });
+  }
+});
+
 
 export const soluxRoutes = router;
