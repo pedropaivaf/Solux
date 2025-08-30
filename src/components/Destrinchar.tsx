@@ -241,7 +241,7 @@ export default function Destrinchar() {
             />
             <input
               className="w-full p-3 rounded-lg bg-slate-100 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700"
-              placeholder="Restrições (opcional — ex.: Sem vender bens)"
+              placeholder="Restrições (opcional)"
               value={restricoes}
               onChange={e => setRestricoes(e.target.value)}
             />
